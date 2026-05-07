@@ -1,0 +1,688 @@
+<!DOCTYPE html>
+<html lang="en" class="dark">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>SCADA TERMINAL // FIRE-OPS</title>
+    
+    <!-- Fonts -->
+    <link rel="preconnect" href="https://fonts.googleapis.com">
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+    <link href="https://fonts.googleapis.com/css2?family=Bebas+Neue&family=IBM+Plex+Sans:wght@300;400;500;600&family=JetBrains+Mono:wght@400;700;800&display=swap" rel="stylesheet">
+    
+    <!-- Leaflet CSS -->
+    <link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css" />
+
+    <!-- Tailwind CSS -->
+    <script src="https://cdn.tailwindcss.com"></script>
+    <script>
+        tailwind.config = {
+            darkMode: 'class',
+            theme: {
+                extend: {
+                    colors: {
+                        graphite: '#08080a',
+                        panel: '#121215',
+                        'panel-border': '#2a2a35',
+                        scada: {
+                            red: '#ff2a2a',
+                            orange: '#ff8c00',
+                            cyan: '#00e5ff',
+                            green: '#00ff66',
+                            muted: '#525266'
+                        }
+                    },
+                    fontFamily: {
+                        mono: ['JetBrains Mono', 'monospace'],
+                        sans: ['IBM Plex Sans', 'sans-serif'],
+                        display: ['Bebas Neue', 'cursive']
+                    },
+                    backgroundImage: {
+                        'crt-lines': 'linear-gradient(rgba(18, 16, 16, 0) 50%, rgba(0, 0, 0, 0.25) 50%), linear-gradient(90deg, rgba(255, 0, 0, 0.06), rgba(0, 255, 0, 0.02), rgba(0, 0, 255, 0.06))',
+                    },
+                    animation: {
+                        'pulse-fast': 'pulse 1s cubic-bezier(0.4, 0, 0.6, 1) infinite',
+                        'scanline': 'scanline 8s linear infinite',
+                        'flicker': 'flicker 0.15s infinite',
+                    },
+                    keyframes: {
+                        scanline: {
+                            '0%': { transform: 'translateY(-100%)' },
+                            '100%': { transform: 'translateY(100vh)' }
+                        },
+                        flicker: {
+                            '0%': { opacity: '0.95' },
+                            '100%': { opacity: '1' }
+                        }
+                    }
+                }
+            }
+        }
+    </script>
+
+    <style>
+        body {
+            background-color: #050505;
+            color: #e0e0e0;
+            overflow: hidden;
+            margin: 0;
+            padding: 0;
+        }
+
+        /* Grain Texture */
+        .noise-overlay {
+            position: fixed;
+            top: 0; left: 0; width: 100vw; height: 100vh;
+            pointer-events: none;
+            z-index: 9999;
+            opacity: 0.04;
+            background-image: url("data:image/svg+xml,%3Csvg viewBox='0 0 200 200' xmlns='http://www.w3.org/2000/svg'%3E%3Cfilter id='noiseFilter'%3E%3CfeTurbulence type='fractalNoise' baseFrequency='0.85' numOctaves='3' stitchTiles='stitch'/%3E%3C/filter%3E%3Crect width='100%25' height='100%25' filter='url(%23noiseFilter)'/%3E%3C/svg%3E");
+        }
+
+        /* CRT Scanline */
+        .crt-overlay {
+            position: fixed;
+            top: 0; left: 0; width: 100vw; height: 100vh;
+            pointer-events: none;
+            z-index: 9998;
+            background: background-image: theme('backgroundImage.crt-lines');
+            background-size: 100% 4px, 3px 100%;
+            opacity: 0.4;
+        }
+
+        .scada-panel {
+            background: rgba(18, 18, 21, 0.75);
+            backdrop-filter: blur(12px);
+            border: 1px solid rgba(42, 42, 53, 0.6);
+            box-shadow: 0 4px 30px rgba(0, 0, 0, 0.5), inset 0 1px 0 rgba(255, 255, 255, 0.05);
+        }
+
+        .scada-border-glow {
+            position: relative;
+        }
+        .scada-border-glow::before {
+            content: '';
+            position: absolute;
+            top: -1px; left: -1px; right: -1px; bottom: -1px;
+            background: linear-gradient(45deg, transparent, rgba(0, 229, 255, 0.2), transparent);
+            z-index: -1;
+        }
+
+        .danger-glow {
+            box-shadow: 0 0 20px rgba(255, 42, 42, 0.4), inset 0 0 15px rgba(255, 42, 42, 0.2);
+            border-color: rgba(255, 42, 42, 0.6);
+        }
+
+        /* Custom Scrollbar */
+        ::-webkit-scrollbar { width: 6px; }
+        ::-webkit-scrollbar-track { background: #08080a; }
+        ::-webkit-scrollbar-thumb { background: #2a2a35; border-radius: 3px; }
+        ::-webkit-scrollbar-thumb:hover { background: #00e5ff; }
+
+        .glitch-text {
+            text-shadow: 2px 0 red, -2px 0 cyan;
+            animation: flicker 0.1s infinite;
+        }
+    </style>
+
+    <!-- React & ReactDOM -->
+    <script src="https://unpkg.com/react@18/umd/react.production.min.js" crossorigin></script>
+    <script src="https://unpkg.com/react-dom@18/umd/react-dom.production.min.js" crossorigin></script>
+    
+    <!-- Babel -->
+    <script src="https://unpkg.com/@babel/standalone/babel.min.js"></script>
+
+    <!-- Chart.js -->
+    <script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
+
+    <!-- Leaflet JS -->
+    <script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
+</head>
+<body class="font-sans antialiased">
+    <div class="noise-overlay"></div>
+    <div class="crt-overlay"></div>
+    <div class="fixed top-0 w-full h-1 bg-scada-cyan/20 z-[10000] opacity-50 scanline"></div>
+    
+    <div id="root"></div>
+
+    <script type="text/babel">
+        const { useState, useEffect, useRef, useMemo } = React;
+
+        // --- ICONS (SVG Wrapper) ---
+        const Icon = ({ name, className = "w-5 h-5" }) => {
+            const icons = {
+                activity: <svg xmlns="http://www.w3.org/2000/svg" width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><polyline points="22 12 18 12 15 21 9 3 6 12 2 12"></polyline></svg>,
+                flame: <svg xmlns="http://www.w3.org/2000/svg" width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><path d="M8.5 14.5A2.5 2.5 0 0 0 11 12c0-1.38-.5-2-1-3-1.072-2.143-.224-4.054 2-6 .5 2.5 2 4.9 4 6.5 2 1.6 3 3.5 3 5.5a7 7 0 1 1-14 0c0-1.153.433-2.294 1-3a2.5 2.5 0 0 0 2.5 2.5z"></path></svg>,
+                wind: <svg xmlns="http://www.w3.org/2000/svg" width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><path d="M9.59 4.59A2 2 0 1 1 11 8H2m10.59 11.41A2 2 0 1 0 14 16H2m15.73-8.27A2.5 2.5 0 1 1 19.5 12H2"></path></svg>,
+                server: <svg xmlns="http://www.w3.org/2000/svg" width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><rect x="2" y="2" width="20" height="8" rx="2" ry="2"></rect><rect x="2" y="14" width="20" height="8" rx="2" ry="2"></rect><line x1="6" y1="6" x2="6.01" y2="6"></line><line x1="6" y1="18" x2="6.01" y2="18"></line></svg>,
+                camera: <svg xmlns="http://www.w3.org/2000/svg" width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><path d="M14.5 4h-5L7 7H4a2 2 0 0 0-2 2v9a2 2 0 0 0 2 2h16a2 2 0 0 0 2-2V9a2 2 0 0 0-2-2h-3l-2.5-3z"></path><circle cx="12" cy="13" r="3"></circle></svg>,
+                map: <svg xmlns="http://www.w3.org/2000/svg" width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><polygon points="1 6 1 22 8 18 16 22 23 18 23 2 16 6 8 2 1 6"></polygon><line x1="8" y1="2" x2="8" y2="18"></line><line x1="16" y1="6" x2="16" y2="22"></line></svg>,
+                settings: <svg xmlns="http://www.w3.org/2000/svg" width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><circle cx="12" cy="12" r="3"></circle><path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 0 1 0 2.83 2 2 0 0 1-2.83 0l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 0 1-2 2 2 2 0 0 1-2-2v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 0 1-2.83 0 2 2 0 0 1 0-2.83l.06-.06a1.65 1.65 0 0 0 .33-1.82 1.65 1.65 0 0 0-1.51-1H3a2 2 0 0 1-2-2 2 2 0 0 1 2-2h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 0 1 0-2.83 2 2 0 0 1 2.83 0l.06.06a1.65 1.65 0 0 0 1.82.33H9a1.65 1.65 0 0 0 1-1.51V3a2 2 0 0 1 2-2 2 2 0 0 1 2 2v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 0 1 2.83 0 2 2 0 0 1 0 2.83l-.06.06a1.65 1.65 0 0 0-.33 1.82V9a1.65 1.65 0 0 0 1.51 1H21a2 2 0 0 1 2 2 2 2 0 0 1-2 2h-.09a1.65 1.65 0 0 0-1.51 1z"></path></svg>,
+                lock: <svg xmlns="http://www.w3.org/2000/svg" width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><rect x="3" y="11" width="18" height="11" rx="2" ry="2"></rect><path d="M7 11V7a5 5 0 0 1 10 0v4"></path></svg>,
+                shield: <svg xmlns="http://www.w3.org/2000/svg" width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><path d="M12 22s8-4 8-10V5l-8-3-8 3v7c0 6 8 10 8 10z"></path></svg>
+            };
+            return <div className={className}>{icons[name] || icons.activity}</div>;
+        };
+
+        // --- COMPONENTS ---
+
+        const AuthPage = ({ onLogin }) => {
+            const [status, setStatus] = useState("AWAITING CREDENTIALS");
+            
+            const handleLogin = (e) => {
+                e.preventDefault();
+                setStatus("AUTHENTICATING VIA IEC 61850...");
+                setTimeout(() => onLogin(), 1500);
+            };
+
+            return (
+                <div className="flex items-center justify-center min-h-screen relative z-10 p-4">
+                    <div className="absolute inset-0 bg-[radial-gradient(ellipse_at_center,_var(--tw-gradient-stops))] from-scada-cyan/5 via-graphite to-graphite"></div>
+                    
+                    <div className="scada-panel p-8 w-full max-w-md relative z-20 border-t-2 border-t-scada-cyan scada-border-glow">
+                        <div className="text-center mb-8">
+                            <Icon name="shield" className="w-12 h-12 mx-auto text-scada-cyan mb-4" />
+                            <h1 className="font-display text-4xl tracking-widest text-white">SYSTEM AUTH</h1>
+                            <p className="font-mono text-scada-cyan text-xs mt-2 uppercase tracking-widest">{status}</p>
+                        </div>
+                        
+                        <form onSubmit={handleLogin} className="space-y-6">
+                            <div>
+                                <label className="block font-mono text-xs text-scada-muted mb-2 uppercase">Operator ID</label>
+                                <input type="text" defaultValue="ADMIN_NODE_01" className="w-full bg-black/50 border border-panel-border p-3 font-mono text-sm text-scada-cyan focus:outline-none focus:border-scada-cyan transition-colors" />
+                            </div>
+                            <div>
+                                <label className="block font-mono text-xs text-scada-muted mb-2 uppercase">Access Token</label>
+                                <input type="password" defaultValue="********" className="w-full bg-black/50 border border-panel-border p-3 font-mono text-sm text-white focus:outline-none focus:border-scada-cyan transition-colors" />
+                            </div>
+                            <button type="submit" className="w-full bg-scada-cyan/10 border border-scada-cyan/50 text-scada-cyan font-mono text-sm uppercase py-3 hover:bg-scada-cyan hover:text-black transition-all duration-300 font-bold tracking-wider">
+                                Initialize Link
+                            </button>
+                        </form>
+                    </div>
+                </div>
+            );
+        };
+
+        const SensorCard = ({ title, value, unit, icon, max, dangerThreshold, warningThreshold, type }) => {
+            const isDanger = value >= dangerThreshold;
+            const isWarning = value >= warningThreshold && !isDanger;
+            
+            const colorClass = isDanger ? 'text-scada-red' : isWarning ? 'text-scada-orange' : 'text-scada-cyan';
+            const borderClass = isDanger ? 'danger-glow animate-pulse-fast' : isWarning ? 'border-scada-orange/50' : 'border-panel-border';
+            const progressColor = isDanger ? 'bg-scada-red' : isWarning ? 'bg-scada-orange' : 'bg-scada-cyan';
+            
+            const percentage = Math.min((value / max) * 100, 100);
+
+            return (
+                <div className={`scada-panel p-4 border flex flex-col justify-between ${borderClass} transition-all duration-300 relative overflow-hidden group`}>
+                    {/* Background tech pattern */}
+                    <div className="absolute -right-4 -top-4 opacity-5 group-hover:opacity-10 transition-opacity">
+                        <Icon name={icon} className="w-24 h-24" />
+                    </div>
+
+                    <div className="flex justify-between items-start z-10">
+                        <div className="flex items-center gap-2">
+                            <Icon name={icon} className={`w-4 h-4 ${colorClass}`} />
+                            <h3 className="font-mono text-xs uppercase text-scada-muted tracking-wider">{title}</h3>
+                        </div>
+                        {isDanger && <span className="font-mono text-[10px] bg-scada-red text-white px-1 py-0.5 animate-pulse">CRITICAL</span>}
+                    </div>
+                    
+                    <div className="mt-4 mb-2 z-10 flex items-baseline gap-1">
+                        <span className={`font-mono text-4xl font-bold ${colorClass} tracking-tighter`}>{type === 'flame' ? (value ? 'DETECT' : 'CLEAR') : value.toFixed(1)}</span>
+                        {unit && <span className="font-mono text-sm text-scada-muted">{unit}</span>}
+                    </div>
+                    
+                    {type !== 'flame' && (
+                        <div className="w-full h-1 bg-black/50 mt-2 z-10">
+                            <div className={`h-full ${progressColor} transition-all duration-500`} style={{ width: `${percentage}%` }}></div>
+                        </div>
+                    )}
+                    
+                    <div className="mt-2 font-mono text-[9px] text-scada-muted flex justify-between z-10">
+                        <span>MIN: 0</span>
+                        <span>MAX: {max}</span>
+                    </div>
+                </div>
+            );
+        };
+
+        const RealtimeChart = ({ dataHistory }) => {
+            const chartRef = useRef(null);
+            const canvasRef = useRef(null);
+
+            useEffect(() => {
+                if (canvasRef.current) {
+                    const ctx = canvasRef.current.getContext('2d');
+                    chartRef.current = new Chart(ctx, {
+                        type: 'line',
+                        data: {
+                            labels: Array(20).fill(''),
+                            datasets: [
+                                {
+                                    label: 'TEMP (°C)',
+                                    data: dataHistory.map(d => d.temp),
+                                    borderColor: '#ff8c00',
+                                    borderWidth: 2,
+                                    pointRadius: 0,
+                                    tension: 0.4
+                                },
+                                {
+                                    label: 'SMOKE (MQ-2 PPM)',
+                                    data: dataHistory.map(d => d.smoke / 10), // Scaled down for visual comparison
+                                    borderColor: '#525266',
+                                    borderWidth: 2,
+                                    borderDash: [5, 5],
+                                    pointRadius: 0,
+                                    tension: 0.4
+                                }
+                            ]
+                        },
+                        options: {
+                            responsive: true,
+                            maintainAspectRatio: false,
+                            animation: false,
+                            plugins: {
+                                legend: { display: false }
+                            },
+                            scales: {
+                                x: { display: false },
+                                y: {
+                                    display: true,
+                                    grid: { color: '#2a2a35' },
+                                    ticks: { color: '#525266', font: { family: 'JetBrains Mono' } }
+                                }
+                            }
+                        }
+                    });
+                }
+                return () => {
+                    if (chartRef.current) chartRef.current.destroy();
+                };
+            }, []);
+
+            useEffect(() => {
+                if (chartRef.current) {
+                    chartRef.current.data.datasets[0].data = dataHistory.map(d => d.temp);
+                    chartRef.current.data.datasets[1].data = dataHistory.map(d => d.smoke / 10);
+                    chartRef.current.update();
+                }
+            }, [dataHistory]);
+
+            return (
+                <div className="scada-panel p-4 flex flex-col h-full border border-panel-border relative">
+                    <div className="flex justify-between items-center mb-4">
+                        <h3 className="font-mono text-xs uppercase text-scada-muted tracking-wider"><span className="text-scada-cyan mr-2">■</span>TELEMETRY TRENDS (IEC-61850)</h3>
+                        <div className="flex gap-4">
+                            <span className="font-mono text-[10px] text-scada-orange flex items-center gap-1"><div className="w-2 h-2 bg-scada-orange"></div> TEMP</span>
+                            <span className="font-mono text-[10px] text-scada-muted flex items-center gap-1"><div className="w-2 h-2 border border-scada-muted"></div> MQ-2 (x0.1)</span>
+                        </div>
+                    </div>
+                    <div className="flex-grow relative w-full h-full min-h-[200px]">
+                        <canvas ref={canvasRef}></canvas>
+                    </div>
+                </div>
+            );
+        };
+
+        const MapModule = ({ hasFire }) => {
+            const mapRef = useRef(null);
+
+            useEffect(() => {
+                if (!mapRef.current) {
+                    mapRef.current = L.map('scada-map', {
+                        zoomControl: false,
+                        attributionControl: false
+                    }).setView([10.732, 106.699], 18); // Fictional industrial coord
+
+                    L.tileLayer('https://{s}.basemaps.cartocdn.com/dark_nolabels/{z}/{x}/{y}{r}.png', {
+                        subdomains: 'abcd',
+                        maxZoom: 20
+                    }).addTo(mapRef.current);
+
+                    // Add grid lines for tactical look
+                    L.tileLayer('https://{s}.basemaps.cartocdn.com/dark_only_labels/{z}/{x}/{y}{r}.png', {
+                        subdomains: 'abcd',
+                        opacity: 0.3
+                    }).addTo(mapRef.current);
+                }
+
+                // Clean up markers
+                mapRef.current.eachLayer((layer) => {
+                    if (layer instanceof L.CircleMarker || layer instanceof L.Circle) {
+                        mapRef.current.removeLayer(layer);
+                    }
+                });
+
+                // Sensor 1 Marker
+                L.circleMarker([10.7325, 106.699], {
+                    radius: 6,
+                    color: hasFire ? '#ff2a2a' : '#00e5ff',
+                    fillColor: hasFire ? '#ff2a2a' : '#00e5ff',
+                    fillOpacity: 0.8
+                }).addTo(mapRef.current);
+
+                // Danger zone
+                if (hasFire) {
+                    L.circle([10.7325, 106.699], {
+                        radius: 40,
+                        color: '#ff2a2a',
+                        fillColor: '#ff2a2a',
+                        fillOpacity: 0.2,
+                        weight: 1,
+                        dashArray: '5, 5'
+                    }).addTo(mapRef.current);
+                }
+            }, [hasFire]);
+
+            return (
+                <div className="scada-panel border border-panel-border h-full flex flex-col relative overflow-hidden group">
+                    <div className="absolute top-0 left-0 w-full p-2 z-[999] bg-gradient-to-b from-black/80 to-transparent flex justify-between pointer-events-none">
+                        <span className="font-mono text-[10px] text-scada-cyan bg-black/50 px-1 border border-scada-cyan/30">SECTOR ALPHA // MAP OVERLAY</span>
+                        <span className="font-mono text-[10px] text-scada-muted">LAT 10.732 LON 106.699</span>
+                    </div>
+                    {hasFire && (
+                         <div className="absolute inset-0 border-2 border-scada-red z-[998] pointer-events-none animate-pulse-fast"></div>
+                    )}
+                    <div id="scada-map" className="w-full h-full min-h-[250px] z-[1]"></div>
+                    <div className="absolute bottom-2 right-2 z-[999] pointer-events-none">
+                        <Icon name="map" className="w-16 h-16 opacity-10 text-white" />
+                    </div>
+                </div>
+            );
+        };
+
+        const CameraModule = ({ isAutoActive, manualToggle, setManualToggle }) => {
+            const isActive = isAutoActive || manualToggle;
+
+            return (
+                <div className="scada-panel border border-panel-border h-full flex flex-col relative bg-black">
+                    <div className="flex justify-between items-center p-2 border-b border-panel-border bg-panel z-10">
+                        <div className="flex items-center gap-2">
+                            <Icon name="camera" className={`w-4 h-4 ${isActive ? 'text-scada-cyan' : 'text-scada-muted'}`} />
+                            <span className="font-mono text-[10px] uppercase text-scada-muted">OPTICAL FEED (IMX179) - ESP32-S3 LINK</span>
+                        </div>
+                        <button 
+                            onClick={() => setManualToggle(!manualToggle)}
+                            className={`font-mono text-[9px] px-2 py-0.5 border ${isActive ? 'border-scada-cyan text-scada-cyan' : 'border-scada-muted text-scada-muted hover:border-white hover:text-white'} transition-colors cursor-pointer z-20 relative`}
+                        >
+                            {isActive ? 'SYS: ONLINE' : 'SYS: OFFLINE'}
+                        </button>
+                    </div>
+
+                    <div className="flex-grow relative overflow-hidden flex items-center justify-center">
+                        {!isActive ? (
+                            <div className="text-center">
+                                <span className="font-mono text-xs text-scada-muted opacity-50 block mb-2">STANDBY MODE</span>
+                                <span className="font-mono text-[9px] text-scada-muted/30">AWAITING TRIGGER EVENT</span>
+                            </div>
+                        ) : (
+                            <>
+                                {/* Fake Camera Feed Simulation */}
+                                <div className="absolute inset-0 bg-neutral-900 flex items-center justify-center opacity-80">
+                                    <div className="w-full h-full bg-[radial-gradient(circle,_#333_10%,_#000_100%)] opacity-40 animate-pulse"></div>
+                                    <div className="absolute top-4 right-4 flex items-center gap-2">
+                                        <div className="w-2 h-2 rounded-full bg-scada-red animate-pulse"></div>
+                                        <span className="font-mono text-[10px] text-scada-red font-bold">REC</span>
+                                    </div>
+                                    {/* AI Bounding Box Simulation */}
+                                    {isAutoActive && (
+                                        <div className="absolute top-[20%] left-[30%] w-32 h-40 border-2 border-scada-red bg-scada-red/10 flex flex-col">
+                                            <span className="bg-scada-red text-white font-mono text-[8px] px-1 self-start">THERMAL ANOMALY 98%</span>
+                                            <div className="w-full h-full relative">
+                                                <div className="absolute top-0 left-0 w-2 h-2 border-t-2 border-l-2 border-white"></div>
+                                                <div className="absolute top-0 right-0 w-2 h-2 border-t-2 border-r-2 border-white"></div>
+                                                <div className="absolute bottom-0 left-0 w-2 h-2 border-b-2 border-l-2 border-white"></div>
+                                                <div className="absolute bottom-0 right-0 w-2 h-2 border-b-2 border-r-2 border-white"></div>
+                                            </div>
+                                        </div>
+                                    )}
+                                    {/* Camera Crosshair */}
+                                    <div className="absolute inset-0 flex items-center justify-center pointer-events-none opacity-30">
+                                        <div className="w-px h-full bg-white"></div>
+                                        <div className="h-px w-full bg-white absolute"></div>
+                                        <div className="w-16 h-16 rounded-full border border-white"></div>
+                                    </div>
+                                    <div className="absolute bottom-2 left-2 font-mono text-[10px] text-white opacity-70">CAM_01 // SECTOR A</div>
+                                    <div className="absolute bottom-2 right-2 font-mono text-[10px] text-white opacity-70">FPS: 30 // BITRATE: 2.4Mbps</div>
+                                </div>
+                            </>
+                        )}
+                    </div>
+                </div>
+            );
+        };
+
+        const MainApp = () => {
+            const [isAuthenticated, setIsAuthenticated] = useState(false);
+            const [activeTab, setActiveTab] = useState('dashboard');
+            
+            // Sensor State
+            const [data, setData] = useState({ temp: 28.5, smoke: 320, flame: false });
+            const [history, setHistory] = useState(Array(20).fill({ temp: 28, smoke: 300 }));
+            const [manualCam, setManualCam] = useState(false);
+            
+            const [systemTime, setSystemTime] = useState(new Date());
+
+            // Clock
+            useEffect(() => {
+                const timer = setInterval(() => setSystemTime(new Date()), 1000);
+                return () => clearInterval(timer);
+            }, []);
+
+            // Telemetry Simulation Hook
+            useEffect(() => {
+                if (!isAuthenticated) return;
+
+                const interval = setInterval(() => {
+                    setData(prev => {
+                        let newTemp = prev.temp + (Math.random() * 1 - 0.5);
+                        let newSmoke = prev.smoke + (Math.random() * 20 - 10);
+                        let newFlame = prev.flame;
+
+                        // Ensure values stay within somewhat realistic normal ranges
+                        newTemp = Math.max(20, Math.min(newTemp, 45));
+                        newSmoke = Math.max(100, Math.min(newSmoke, 600));
+
+                        // Simulation Events (spikes) - 5% chance every update
+                        if (Math.random() < 0.05) {
+                            newTemp = 65 + Math.random() * 20; // Spike Temp
+                            newSmoke = 1200 + Math.random() * 500; // Spike Smoke
+                            newFlame = true;
+                        } else if (newTemp < 50 && newSmoke < 800) {
+                            newFlame = false; // reset
+                        }
+
+                        const newData = { temp: newTemp, smoke: newSmoke, flame: newFlame };
+                        
+                        setHistory(h => {
+                            const newHistory = [...h.slice(1), newData];
+                            return newHistory;
+                        });
+
+                        return newData;
+                    });
+                }, 2000);
+
+                return () => clearInterval(interval);
+            }, [isAuthenticated]);
+
+            const triggerManualSpike = () => {
+                setData({ temp: 85.2, smoke: 2150, flame: true });
+            };
+
+            const isEmergency = data.temp > 60 || data.smoke > 1000 || data.flame;
+            const camAutoActive = isEmergency;
+
+            if (!isAuthenticated) {
+                return <AuthPage onLogin={() => setIsAuthenticated(true)} />;
+            }
+
+            return (
+                <div className="flex h-screen w-full relative z-10 selection:bg-scada-cyan selection:text-black">
+                    
+                    {/* Fullscreen Emergency Overlay */}
+                    {isEmergency && (
+                        <div className="absolute inset-0 border-[8px] border-scada-red pointer-events-none z-[9999] animate-pulse-fast flex items-start justify-center">
+                            <div className="bg-scada-red text-white font-display text-4xl px-12 py-2 tracking-widest mt-4 animate-flicker">
+                                CRITICAL: SECTOR BREACH DETECTED
+                            </div>
+                        </div>
+                    )}
+
+                    {/* Sidebar */}
+                    <aside className="w-16 md:w-64 border-r border-panel-border bg-panel/50 backdrop-blur-md flex flex-col transition-all duration-300">
+                        <div className="h-16 flex items-center justify-center border-b border-panel-border px-4 overflow-hidden">
+                            <Icon name="shield" className="w-6 h-6 text-scada-cyan shrink-0" />
+                            <span className="hidden md:block ml-3 font-display text-xl tracking-widest text-white whitespace-nowrap">SCADA CTL</span>
+                        </div>
+                        
+                        <nav className="flex-1 py-4 flex flex-col gap-2 px-2">
+                            {[
+                                { id: 'dashboard', icon: 'activity', label: 'MONITORING' },
+                                { id: 'map', icon: 'map', label: 'TACTICAL MAP' },
+                                { id: 'history', icon: 'server', label: 'DATA LOGS' },
+                                { id: 'settings', icon: 'settings', label: 'CONFIG' },
+                            ].map(item => (
+                                <button 
+                                    key={item.id}
+                                    onClick={() => setActiveTab(item.id)}
+                                    className={`flex items-center p-3 rounded-sm font-mono text-xs tracking-wider transition-all
+                                        ${activeTab === item.id 
+                                            ? 'bg-scada-cyan/10 text-scada-cyan border-l-2 border-scada-cyan' 
+                                            : 'text-scada-muted hover:bg-white/5 hover:text-white border-l-2 border-transparent'}`}
+                                >
+                                    <Icon name={item.icon} className="w-5 h-5 shrink-0" />
+                                    <span className="hidden md:block ml-3 whitespace-nowrap">{item.label}</span>
+                                </button>
+                            ))}
+                        </nav>
+
+                        <div className="p-4 border-t border-panel-border">
+                            <button 
+                                onClick={triggerManualSpike}
+                                className="w-full bg-scada-red/10 border border-scada-red/30 text-scada-red font-mono text-[10px] py-2 hover:bg-scada-red hover:text-white transition-colors uppercase tracking-widest flex items-center justify-center gap-2"
+                            >
+                                <Icon name="flame" className="w-3 h-3" />
+                                <span className="hidden md:inline">TEST ALERT</span>
+                            </button>
+                        </div>
+                        <div className="p-4 flex items-center gap-3 bg-black/40 text-xs font-mono border-t border-panel-border">
+                            <div className="w-2 h-2 bg-scada-green rounded-full animate-pulse shadow-[0_0_8px_#00ff66]"></div>
+                            <span className="hidden md:block text-scada-muted">SYSTEM ONLINE</span>
+                        </div>
+                    </aside>
+
+                    {/* Main Content Area */}
+                    <main className="flex-1 flex flex-col min-w-0 overflow-hidden relative">
+                        
+                        {/* Top Header */}
+                        <header className="h-16 border-b border-panel-border bg-panel/30 flex items-center justify-between px-6 shrink-0">
+                            <div className="flex gap-6 items-center">
+                                <div className="font-mono text-xs text-scada-muted flex flex-col">
+                                    <span className="text-[9px] uppercase tracking-widest opacity-50">Local Time</span>
+                                    <span className="text-white">{systemTime.toLocaleTimeString('en-US', { hour12: false, hour: '2-digit', minute: '2-digit', second:'2-digit' })}</span>
+                                </div>
+                                <div className="hidden md:flex font-mono text-xs text-scada-muted flex-col border-l border-panel-border pl-6">
+                                    <span className="text-[9px] uppercase tracking-widest opacity-50">Master Node</span>
+                                    <span className="text-scada-cyan">ESP32-S3 // ONLINE</span>
+                                </div>
+                                <div className="hidden lg:flex font-mono text-xs text-scada-muted flex-col border-l border-panel-border pl-6">
+                                    <span className="text-[9px] uppercase tracking-widest opacity-50">Protocol</span>
+                                    <span className="text-white">Modbus RTU / MQTT</span>
+                                </div>
+                            </div>
+                            <div className="flex items-center gap-4">
+                                <div className="font-mono text-[10px] bg-scada-cyan/10 border border-scada-cyan text-scada-cyan px-3 py-1 flex items-center gap-2">
+                                    <div className="w-1.5 h-1.5 bg-scada-cyan rounded-full animate-pulse"></div>
+                                    POLLING DATA
+                                </div>
+                            </div>
+                        </header>
+
+                        {/* Scrollable Workspace */}
+                        <div className="flex-1 overflow-auto p-4 md:p-6 pb-20">
+                            
+                            {activeTab === 'dashboard' && (
+                                <div className="h-full flex flex-col gap-6">
+                                    {/* Sensors Row */}
+                                    <div className="grid grid-cols-1 md:grid-cols-3 gap-4 shrink-0">
+                                        <SensorCard 
+                                            title="Ambient Temp" value={data.temp} unit="°C" icon="activity" 
+                                            max={100} warningThreshold={45} dangerThreshold={60} type="temp"
+                                        />
+                                        <SensorCard 
+                                            title="MQ-2 Smoke Array" value={data.smoke} unit="PPM" icon="wind" 
+                                            max={3000} warningThreshold={600} dangerThreshold={1000} type="smoke"
+                                        />
+                                        <SensorCard 
+                                            title="Flame Detection" value={data.flame ? 1 : 0} unit="" icon="flame" 
+                                            max={1} warningThreshold={1} dangerThreshold={1} type="flame"
+                                        />
+                                    </div>
+
+                                    {/* Middle Row: Chart & Camera */}
+                                    <div className="grid grid-cols-1 lg:grid-cols-3 gap-4 min-h-[300px] flex-1">
+                                        <div className="lg:col-span-2">
+                                            <RealtimeChart dataHistory={history} />
+                                        </div>
+                                        <div className="h-full">
+                                            <CameraModule 
+                                                isAutoActive={camAutoActive} 
+                                                manualToggle={manualCam} 
+                                                setManualToggle={setManualCam} 
+                                            />
+                                        </div>
+                                    </div>
+
+                                    {/* Bottom Row: Map & Info */}
+                                    <div className="grid grid-cols-1 lg:grid-cols-3 gap-4 min-h-[250px]">
+                                        <div className="lg:col-span-2 h-full">
+                                            <MapModule hasFire={isEmergency} />
+                                        </div>
+                                        <div className="scada-panel border border-panel-border p-4 flex flex-col gap-4">
+                                            <h3 className="font-mono text-xs uppercase text-scada-muted tracking-wider border-b border-panel-border pb-2">SYS DIAGNOSTICS</h3>
+                                            <div className="space-y-3 font-mono text-[10px]">
+                                                <div className="flex justify-between border-b border-white/5 pb-1">
+                                                    <span className="text-scada-muted">NETWORK LATENCY</span>
+                                                    <span className="text-white">{(Math.random() * 15 + 10).toFixed(0)} ms</span>
+                                                </div>
+                                                <div className="flex justify-between border-b border-white/5 pb-1">
+                                                    <span className="text-scada-muted">UPTIME</span>
+                                                    <span className="text-white">99.98%</span>
+                                                </div>
+                                                <div className="flex justify-between border-b border-white/5 pb-1">
+                                                    <span className="text-scada-muted">LINK STABILITY</span>
+                                                    <span className="text-scada-green">NOMINAL</span>
+                                                </div>
+                                                <div className="flex justify-between border-b border-white/5 pb-1">
+                                                    <span className="text-scada-muted">FIRMWARE</span>
+                                                    <span className="text-white">v3.2.1-OTA</span>
+                                                </div>
+                                            </div>
+                                        </div>
+                                    </div>
+                                </div>
+                            )}
+
+                            {activeTab !== 'dashboard' && (
+                                <div className="h-full flex items-center justify-center">
+                                    <div className="text-center scada-panel p-12 border border-panel-border border-dashed">
+                                        <Icon name={activeTab === 'map' ? 'map' : activeTab === 'history' ? 'server' : 'settings'} className="w-12 h-12 text-scada-muted mx-auto mb-4 opacity-50" />
+                                        <h2 className="font-display text-2xl text-scada-muted tracking-widest uppercase">{activeTab} MODULE</h2>
+                                        <p className="font-mono text-xs text-scada-muted/50 mt-2">ACCESS RESTRICTED // UI NOT IMPLEMENTED IN DEMO</p>
+                                    </div>
+                                </div>
+                            )}
+                        </div>
+                    </main>
+                </div>
+            );
+        };
+
+        const root = ReactDOM.createRoot(document.getElementById('root'));
+        root.render(<MainApp />);
+    </script>
+</body>
+</html>
